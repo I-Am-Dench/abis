@@ -16,6 +16,20 @@ type BinaryAdvancer interface {
 	AdvanceBinary(data []byte) (buf []byte, err error)
 }
 
+// Options is an empty, dummy type that can be given struct tags to
+// control the generation of serialization methods.
+//
+// The following example will tell the ABIS tool to only generate
+// [BinaryAdvancer] methods:
+//
+//	type Example struct {
+//		_ abis.Options `abis:"advancer"`
+//
+//		Name string
+//		Type int
+//	}
+type Options struct{}
+
 var order = binary.BigEndian
 
 func AppendBool(buf []byte, b bool) []byte {

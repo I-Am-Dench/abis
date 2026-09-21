@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -37,12 +38,12 @@ func findInterfaceType(packageName string, typeName string) (*types.Interface, e
 		Mode: packages.LoadTypes,
 	}
 
-	encodingPkg, err := packages.Load(&config, packageName)
+	pkgs, err := packages.Load(&config, packageName)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, pkg := range encodingPkg {
+	for _, pkg := range pkgs {
 		obj := pkg.Types.Scope().Lookup(typeName)
 		if obj != nil {
 			if inter, ok := obj.Type().Underlying().(*types.Interface); ok {
@@ -54,9 +55,33 @@ func findInterfaceType(packageName string, typeName string) (*types.Interface, e
 	return nil, fmt.Errorf("failed to find interface %s in %s", typeName, packageName)
 }
 
+func findNamedType(packageName string, typeName string) (*types.Named, error) {
+	config := packages.Config{
+		Mode: packages.LoadTypes,
+	}
+
+	pkgs, err := packages.Load(&config, packageName)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, pkg := range pkgs {
+		obj := pkg.Types.Scope().Lookup(typeName)
+		if obj != nil {
+			if named, ok := obj.Type().(*types.Named); ok {
+				return named, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to find struct type %s in %s", typeName, packageName)
+}
+
 var (
 	binaryAppenderType *types.Interface
 	binaryAdvancerType *types.Interface
+
+	optionsType *types.Named
 )
 
 func init() {
@@ -68,6 +93,11 @@ func init() {
 	}
 
 	binaryAdvancerType, err = findInterfaceType(moduleName, "BinaryAdvancer")
+	if err != nil {
+		Error.Fatal(err)
+	}
+
+	optionsType, err = findNamedType(moduleName, "Options")
 	if err != nil {
 		Error.Fatal(err)
 	}
@@ -201,8 +231,8 @@ type Packet struct {
 	Fields []Field
 	FieldsInfo
 
-	IsBinaryAppender bool
-	IsBinaryAdvancer bool
+	WithBinaryAppender bool
+	WithBinaryAdvancer bool
 }
 
 func (p Packet) WriteAppender(w io.Writer) error {
@@ -234,7 +264,11 @@ func (p Packet) WriteAdvancer(w io.Writer) error {
 	receiver := string(strings.ToLower(p.Name)[0])
 
 	buf := bytes.Buffer{}
-	fmt.Fprintf(&buf, "\nfunc (%v *%v) AdvanceBinary(data []byte) ([]byte, error) {\n\tvar err error\n", receiver, p.Name)
+	fmt.Fprintf(&buf, "\nfunc (%v *%v) AdvanceBinary(data []byte) ([]byte, error) {\n", receiver, p.Name)
+
+	if len(p.Fields) > 0 {
+		buf.WriteString("\tvar err error\n")
+	}
 
 	for _, f := range p.Fields {
 		converter, err := f.Converter()
@@ -301,13 +335,13 @@ func (p Package) WriteFile(name string) error {
 	}
 
 	for _, packet := range p.Packets {
-		if !packet.IsBinaryAppender {
+		if packet.WithBinaryAppender {
 			if err := packet.WriteAppender(file); err != nil {
 				return fmt.Errorf("write appender: %v", err)
 			}
 		}
 
-		if !packet.IsBinaryAdvancer {
+		if packet.WithBinaryAdvancer {
 			if err := packet.WriteAdvancer(file); err != nil {
 				return fmt.Errorf("write advancer: %v", err)
 			}
@@ -316,20 +350,58 @@ func (p Package) WriteFile(name string) error {
 	return nil
 }
 
+type Options struct {
+	GenerateAppender bool
+	GenerateAdvancer bool
+}
+
+func ParseOptions(tag reflect.StructTag) (o Options) {
+	opts := tag.Get("abis")
+	for len(opts) > 0 {
+		var opt string
+		opt, opts, _ = strings.Cut(opts, ",")
+
+		switch opt {
+		case "appender":
+			o.GenerateAppender = true
+		case "advancer":
+			o.GenerateAdvancer = true
+		}
+	}
+	return o
+}
+
 type FieldsInfo struct {
 	HasNamedField bool
 	NeedsMathPkg  bool
 }
 
-func GetFields(info *types.Struct) (fields []Field, fieldsInfo FieldsInfo) {
+func GetFields(info *types.Struct) (fields []Field, fieldsInfo FieldsInfo, options Options) {
+	options = Options{
+		GenerateAppender: true,
+		GenerateAdvancer: true,
+	}
+
 	fields = []Field{}
-	for field := range info.Fields() {
-		if _, ok := field.Type().(*types.Named); ok {
-			fieldsInfo.HasNamedField = true
+	for i := 0; i < info.NumFields(); i++ {
+		field := info.Field(i)
+
+		if named, ok := field.Type().(*types.Named); ok && named.String() == optionsType.String() {
+			options = ParseOptions(reflect.StructTag(info.Tag(i)))
+			continue
 		}
 
-		if t, ok := field.Type().(*types.Basic); ok && (t.Kind() == types.Float32 || t.Kind() == types.Float64) {
-			fieldsInfo.NeedsMathPkg = true
+		if !field.Exported() {
+			continue
+		}
+
+		switch t := field.Type().(type) {
+		case *types.Named:
+			fieldsInfo.HasNamedField = true
+		case *types.Basic:
+			if t.Kind() == types.Float32 || t.Kind() == types.Float64 {
+				fieldsInfo.NeedsMathPkg = true
+			}
 		}
 
 		fields = append(fields, Field{
@@ -337,7 +409,7 @@ func GetFields(info *types.Struct) (fields []Field, fieldsInfo FieldsInfo) {
 			Type: field.Type(),
 		})
 	}
-	return fields, fieldsInfo
+	return fields, fieldsInfo, options
 }
 
 func GetPackages(name string) ([]Package, error) {
@@ -382,15 +454,18 @@ func GetPackages(name string) ([]Package, error) {
 			}
 
 			if info, ok := def.Type().Underlying().(*types.Struct); ok && def.Exported() && def.Parent() != nil {
-				fields, fieldsInfo := GetFields(info)
+				fields, fieldsInfo, options := GetFields(info)
+
+				isAppender := types.Implements(def.Type(), binaryAppenderType)
+				isAdvancer := types.Implements(def.Type(), binaryAdvancerType) || types.Implements(types.NewPointer(def.Type()), binaryAdvancerType)
 
 				packets = append(packets, Packet{
 					Name:       def.Name(),
 					Fields:     fields,
 					FieldsInfo: fieldsInfo,
 
-					IsBinaryAppender: types.Implements(def.Type(), binaryAppenderType),
-					IsBinaryAdvancer: types.Implements(def.Type(), binaryAdvancerType) || types.Implements(types.NewPointer(def.Type()), binaryAdvancerType),
+					WithBinaryAppender: !isAppender && options.GenerateAppender,
+					WithBinaryAdvancer: !isAdvancer && options.GenerateAdvancer,
 				})
 			}
 		}

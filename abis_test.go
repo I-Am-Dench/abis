@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"testing"
+
+	"github.com/I-Am-Dench/abis"
 )
 
 type Environment struct {
@@ -242,4 +244,12 @@ func TestCustom(t *testing.T) {
 	if data[0] != 1 {
 		t.Errorf("expected 1 but got %d", data[0])
 	}
+}
+
+type WithAppender struct {
+	_ abis.Options `abis:"appender"`
+}
+
+type WithAdvancer struct {
+	_ abis.Options `abis:"advancer"`
 }
