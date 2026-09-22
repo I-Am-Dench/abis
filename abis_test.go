@@ -57,6 +57,12 @@ type Vector struct {
 	X, Y float64
 }
 
+type Stats struct {
+	Speed float32
+	Usage float32
+	Tasks uint
+}
+
 type Packet struct {
 	Embedded
 
@@ -77,6 +83,7 @@ type Packet struct {
 
 	Indicies    Indicies
 	Environment Environment
+	Stats       *Stats
 	Points      []Vector
 }
 
@@ -108,6 +115,11 @@ func TestBasic(t *testing.T) {
 		},
 		Environment: Environment{
 			Type: "test",
+		},
+		Stats: &Stats{
+			Speed: 15,
+			Usage: 30.8,
+			Tasks: 6,
 		},
 		Points: []Vector{
 			{-0.5, -0.5},
@@ -203,6 +215,22 @@ func TestBasic(t *testing.T) {
 		t.Errorf("expected %s but got %s", expected.Environment.Type, actual.Environment.Type)
 	}
 
+	if actual.Stats == nil {
+		t.Errorf("stats is nil")
+	} else {
+		if expected.Stats.Speed != actual.Stats.Speed {
+			t.Errorf("expected %g but got %g", expected.Stats.Speed, actual.Stats.Speed)
+		}
+
+		if expected.Stats.Usage != actual.Stats.Usage {
+			t.Errorf("expected %g but got %g", expected.Stats.Usage, actual.Stats.Usage)
+		}
+
+		if expected.Stats.Tasks != actual.Stats.Tasks {
+			t.Errorf("expected %d but got %d", expected.Stats.Tasks, actual.Stats.Tasks)
+		}
+	}
+
 	if len(expected.Points) != len(actual.Points) {
 		t.Errorf("expected %d points but got %d", len(expected.Points), len(actual.Points))
 	} else {
@@ -243,6 +271,73 @@ func TestCustom(t *testing.T) {
 
 	if data[0] != 1 {
 		t.Errorf("expected 1 but got %d", data[0])
+	}
+}
+
+type Arrays struct {
+	PointerToPoints []*Vector
+	RawPoints       []Vector
+}
+
+func TestArrays(t *testing.T) {
+	expected := Arrays{
+		PointerToPoints: []*Vector{
+			{1, 1},
+			{2, 2},
+			{3, 3},
+			{4, 4},
+			{5, 5},
+			{6, 6},
+			{7, 7},
+			{8, 8},
+		},
+		RawPoints: []Vector{
+			{3.14, 6.28},
+			{1000, -1000},
+			{14, 52.578990},
+		},
+	}
+
+	data, err := expected.AppendBinary(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	actual := Arrays{}
+	if _, err := actual.AdvanceBinary(data); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(expected.PointerToPoints) != len(actual.PointerToPoints) {
+		t.Errorf("expected %d PointerToPoints but got %d", len(expected.PointerToPoints), len(actual.PointerToPoints))
+	} else {
+		for i, a := range expected.PointerToPoints {
+			b := actual.PointerToPoints[i]
+
+			if a.X != b.X {
+				t.Errorf("point %d: expected x %g but got %g", i, a.X, b.X)
+			}
+
+			if a.Y != b.Y {
+				t.Errorf("point %d: expected y %g but got %g", i, a.Y, b.Y)
+			}
+		}
+	}
+
+	if len(expected.RawPoints) != len(actual.RawPoints) {
+		t.Errorf("expected %d RawPoints but got %d", len(expected.RawPoints), len(actual.RawPoints))
+	} else {
+		for i, a := range expected.RawPoints {
+			b := actual.RawPoints[i]
+
+			if a.X != b.X {
+				t.Errorf("point %d: expected x %g but got %g", i, a.X, b.X)
+			}
+
+			if a.Y != b.Y {
+				t.Errorf("point %d: expected y %g but got %g", i, a.Y, b.Y)
+			}
+		}
 	}
 }
 

@@ -164,7 +164,9 @@ var basicConverters = map[types.BasicKind]basicConverter{
 	types.String:  {"AppendString", "AdvanceString", ""},
 }
 
-type namedConverter struct{}
+type namedConverter struct {
+	Elem types.Type
+}
 
 func (f namedConverter) WriteAppender(buf *bytes.Buffer, receiver, fieldName string) {
 	buf.WriteString("\tif buf, err = ")
@@ -174,7 +176,17 @@ func (f namedConverter) WriteAppender(buf *bytes.Buffer, receiver, fieldName str
 	buf.WriteString(".AppendBinary(buf); err != nil {\n\t\treturn buf, err\n\t}\n")
 }
 
+func (f namedConverter) writeNew(buf *bytes.Buffer, receiver, fieldName string, elem types.Type) {
+	if named, ok := elem.(*types.Named); ok {
+		fmt.Fprintf(buf, "\t%s.%s = new(%s)\n", receiver, fieldName, named.Obj().Name())
+	}
+}
+
 func (f namedConverter) WriteAdvancer(buf *bytes.Buffer, receiver, fieldName string) {
+	if f.Elem != nil {
+		f.writeNew(buf, receiver, fieldName, f.Elem)
+	}
+
 	buf.WriteString("\tif data, err = ")
 	buf.WriteString(receiver)
 	buf.WriteString(".")
@@ -184,7 +196,9 @@ func (f namedConverter) WriteAdvancer(buf *bytes.Buffer, receiver, fieldName str
 	buf.WriteString("\", err)\n\t}\n")
 }
 
-type sliceConverter struct{}
+type sliceConverter struct {
+	PointerElem bool
+}
 
 func (f sliceConverter) WriteAppender(buf *bytes.Buffer, receiver, fieldName string) {
 	buf.WriteString("\tif buf, err = abis.AppendArray(buf, ")
@@ -195,7 +209,13 @@ func (f sliceConverter) WriteAppender(buf *bytes.Buffer, receiver, fieldName str
 }
 
 func (f sliceConverter) WriteAdvancer(buf *bytes.Buffer, receiver, fieldName string) {
-	buf.WriteString("\tif data, err = abis.AdvanceArray(data, &")
+	buf.WriteString("\tif data, err = abis.")
+	if f.PointerElem {
+		buf.WriteString("AdvanceArrayPointers")
+	} else {
+		buf.WriteString("AdvanceArray")
+	}
+	buf.WriteString("(data, &")
 	buf.WriteString(receiver)
 	buf.WriteString(".")
 	buf.WriteString(fieldName)
@@ -205,8 +225,9 @@ func (f sliceConverter) WriteAdvancer(buf *bytes.Buffer, receiver, fieldName str
 }
 
 type Field struct {
-	Name string
-	Type types.Type
+	Name    string
+	Type    types.Type
+	MakeNew bool
 }
 
 func (f Field) Converter() (Converter, error) {
@@ -218,9 +239,19 @@ func (f Field) Converter() (Converter, error) {
 		}
 		return converter, nil
 	case *types.Named:
-		return namedConverter{}, nil
+		var elem types.Type
+		if f.MakeNew {
+			elem = f.Type
+		}
+		return namedConverter{Elem: elem}, nil
+	case *types.Pointer:
+		f := Field{Name: f.Name, Type: v.Elem(), MakeNew: true}
+		return f.Converter()
 	case *types.Slice:
-		return sliceConverter{}, nil
+		_, pointerElem := v.Elem().(*types.Pointer)
+		return sliceConverter{
+			PointerElem: pointerElem,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unhandled type: %s", f.Type.String())
 	}
@@ -241,7 +272,7 @@ func (p Packet) WriteAppender(w io.Writer) error {
 	buf := bytes.Buffer{}
 	fmt.Fprintf(&buf, "\nfunc (%v %v) AppendBinary(buf []byte) ([]byte, error) {\n", receiver, p.Name)
 
-	if p.HasNamedField {
+	if p.NeedsErrorVar {
 		buf.WriteString("\tvar err error\n")
 	}
 
@@ -372,7 +403,7 @@ func ParseOptions(tag reflect.StructTag) (o Options) {
 }
 
 type FieldsInfo struct {
-	HasNamedField bool
+	NeedsErrorVar bool
 	NeedsMathPkg  bool
 }
 
@@ -397,11 +428,13 @@ func GetFields(info *types.Struct) (fields []Field, fieldsInfo FieldsInfo, optio
 
 		switch t := field.Type().(type) {
 		case *types.Named:
-			fieldsInfo.HasNamedField = true
+			fieldsInfo.NeedsErrorVar = true
 		case *types.Basic:
 			if t.Kind() == types.Float32 || t.Kind() == types.Float64 {
 				fieldsInfo.NeedsMathPkg = true
 			}
+		case *types.Slice:
+			fieldsInfo.NeedsErrorVar = true
 		}
 
 		fields = append(fields, Field{

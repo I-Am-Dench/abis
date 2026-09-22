@@ -237,3 +237,30 @@ func AdvanceArray[S ~[]T, T any, E ptrToAdvancer[T]](buf []byte, arr *S) ([]byte
 
 	return buf, nil
 }
+
+func AdvanceArrayPointers[S ~[]*T, T any, E ptrToAdvancer[T]](buf []byte, arr *S) ([]byte, error) {
+	length, n := binary.Uvarint(buf)
+	if n == 0 {
+		return buf, fmt.Errorf("advance array: size data is too short")
+	}
+	buf = buf[n:]
+
+	if len(buf) < int(length) {
+		return buf, fmt.Errorf("advance array: %w", io.ErrShortBuffer)
+	}
+
+	a := make(S, length)
+	for i := range length {
+		var (
+			v   *T = new(T)
+			err error
+		)
+		if buf, err = E(v).AdvanceBinary(buf); err != nil {
+			return buf, fmt.Errorf("advance arary: %w", err)
+		}
+		a[i] = v
+	}
+	*arr = a
+
+	return buf, nil
+}
