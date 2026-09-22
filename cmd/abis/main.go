@@ -433,6 +433,8 @@ func GetFields(info *types.Struct) (fields []Field, fieldsInfo FieldsInfo, optio
 			if t.Kind() == types.Float32 || t.Kind() == types.Float64 {
 				fieldsInfo.NeedsMathPkg = true
 			}
+		case *types.Pointer:
+			fieldsInfo.NeedsErrorVar = true
 		case *types.Slice:
 			fieldsInfo.NeedsErrorVar = true
 		}
